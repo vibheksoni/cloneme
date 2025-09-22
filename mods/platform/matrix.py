@@ -80,6 +80,7 @@ class MatrixPlatform(BasePlatform):
         self.homeserver = homeserver
         self.username = username
         self.password = password
+        self.device_id = device_id
 
         cfg = AsyncClientConfig(encryption_enabled=True, store_sync_tokens=True)
 
@@ -171,6 +172,11 @@ class MatrixPlatform(BasePlatform):
                 self.logger.debug(
                     "Not responding - not active and no always-respond conditions met"
                 )
+
+            try:
+                await self._allow_devices()
+            except Exception:
+                pass
 
             self.cleanup_inactive_chats()
             return None
@@ -448,6 +454,33 @@ class MatrixPlatform(BasePlatform):
             )
 
             if isinstance(response, RoomSendError):
+                # Check if it's a device verification error
+                if (
+                    "not verified" in response.message.lower()
+                    or "blacklisted" in response.message.lower()
+                ):
+                    self.logger.warning(
+                        f"Device verification issue, trying unencrypted message: {response.message}"
+                    )
+                    # Try sending without encryption by disabling it temporarily
+                    try:
+                        # Send unencrypted message as fallback
+                        response = await self.matrix_client.room_send(
+                            room_id=chat_id,
+                            message_type="m.room.message",
+                            content={"msgtype": "m.text", "body": content},
+                            ignore_unverified_devices=True,
+                        )
+                        if not isinstance(response, RoomSendError):
+                            self.logger.info(
+                                f"Successfully sent unencrypted message to {chat_id}"
+                            )
+                            return True
+                    except Exception as fallback_error:
+                        self.logger.error(
+                            f"Fallback unencrypted send also failed: {fallback_error}"
+                        )
+
                 self.logger.error(
                     f"Failed to send message to {chat_id}: {response.message}"
                 )
@@ -456,6 +489,29 @@ class MatrixPlatform(BasePlatform):
             return True
 
         except Exception as e:
+            # Check if it's a device verification error in the exception message
+            if "not verified" in str(e).lower() or "blacklisted" in str(e).lower():
+                self.logger.warning(
+                    f"Device verification issue in exception, trying unencrypted: {e}"
+                )
+                try:
+                    # Try sending unencrypted message as fallback
+                    response = await self.matrix_client.room_send(
+                        room_id=chat_id,
+                        message_type="m.room.message",
+                        content={"msgtype": "m.text", "body": content},
+                        ignore_unverified_devices=True,
+                    )
+                    if not isinstance(response, RoomSendError):
+                        self.logger.info(
+                            f"Successfully sent unencrypted message to {chat_id}"
+                        )
+                        return True
+                except Exception as fallback_error:
+                    self.logger.error(
+                        f"Fallback unencrypted send also failed: {fallback_error}"
+                    )
+
             self.logger.error(f"Error sending Matrix message: {e}")
             return False
 
@@ -661,6 +717,37 @@ class MatrixPlatform(BasePlatform):
 
         return chat
 
+    async def _allow_devices(self) -> None:
+        """Trust our own device to avoid verification issues when sending messages."""
+        try:
+            if hasattr(self.matrix_client, "keys_query"):
+                await self.matrix_client.keys_query()
+        except Exception:
+            pass
+
+        try:
+            store = getattr(self.matrix_client, "device_store", None)
+            devices = {}
+            if store is not None:
+                devices = getattr(store, "devices", {}).get(
+                    self.matrix_client.user_id, {}
+                )
+            for device_id, dev in dict(devices).items():
+                try:
+                    if getattr(dev, "verified", False):
+                        continue
+                    if hasattr(self.matrix_client, "verify_device"):
+                        self.matrix_client.verify_device(device_id)
+                        self.logger.info(
+                            "verified device %s for %s",
+                            device_id,
+                            self.matrix_client.user_id,
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     async def start_platform(self) -> None:
         """Start the Matrix client and begin listening for events."""
         try:
@@ -677,9 +764,11 @@ class MatrixPlatform(BasePlatform):
             await self.ensure_keys()
             await self.initial_sync()
 
+            # Trust our own device to avoid verification issues
             try:
-                pass
-            except Exception:
+                await self._allow_devices()
+            except Exception as e:
+                self.logger.warning(f"Could not trust own device: {e}")
                 pass
 
             # Start syncing
