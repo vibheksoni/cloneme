@@ -8,6 +8,7 @@ It follows the same pattern as the Discord platform implementation.
 import asyncio
 from email import message
 from platform import platform
+from signal import SIGINT, SIGTERM
 from typing import Any, List, Optional, TYPE_CHECKING
 
 import re
@@ -15,6 +16,7 @@ import datetime
 
 from nio import (
     AsyncClient,
+    AsyncClientConfig,
     Event,
     MatrixRoom,
     MatrixUser,
@@ -56,7 +58,8 @@ class MatrixPlatform(BasePlatform):
         llm: BaseChatModel,
         profile: Optional["Profile"] = None,
         settings_manager: Optional["SettingsManager"] = None,
-        device_id: Optional[str] = None,
+        device_id: str = "",
+        store_path: str = "store",
         **kwargs,
     ):
         """
@@ -77,12 +80,34 @@ class MatrixPlatform(BasePlatform):
         self.homeserver = homeserver
         self.username = username
         self.password = password
-        self.device_id = device_id
+
+        cfg = AsyncClientConfig(encryption_enabled=True, store_sync_tokens=True)
 
         # Initialize Matrix client
+        # Generate a default device_id if none provided
+        if not device_id:
+            import uuid
+
+            device_id = f"entangle_{str(uuid.uuid4())[:8]}"
+
+        # Ensure store directory exists
+        import os
+
+        os.makedirs(store_path, exist_ok=True)
+
         self.matrix_client = AsyncClient(
-            homeserver=homeserver, user=username, device_id=device_id
+            homeserver=homeserver,
+            user=username,
+            device_id=device_id,
+            store_path=store_path,
+            config=cfg,
         )
+
+        try:
+            self.matrix_client.user_id = username
+        except Exception:
+            pass
+        self.password = password
 
         # Track typing contexts
         self._active_typing_contexts = {}
@@ -384,6 +409,31 @@ class MatrixPlatform(BasePlatform):
 
     # Implementation of abstract methods from BasePlatform
 
+    async def ensure_keys(self) -> None:
+        """Upload encryption keys if the client indicates it's necessary"""
+        if getattr(self.matrix_client, "should_upload_keys", False):
+            await self.matrix_client.keys_upload()
+
+    async def initial_sync(self, timeout_ms: int = 3000) -> None:
+        """Perform an initial sync to populate local state.
+
+        Args:
+            timeout_ms: Sync timeout in milliseconds.
+        """
+        await self.matrix_client.sync(timeout=timeout_ms, full_state=True)
+
+    async def sync_forever(self, timeout_ms: int = 30000) -> None:
+        """Run the Matrix sync loop indefinitely.
+
+        Args:
+            timeout_ms: Sync timeout in milliseconds.
+        """
+        await self.matrix_client.sync_forever(timeout=30000, full_state=True)
+
+    async def login(self) -> Any:
+        """Log in to the Matrix homeserver using the configured credentials."""
+        return await self.matrix_client.login(self.password, device_name="entangle")
+
     def get_platform_name(self) -> str:
         """Get the name of this platform."""
         return "matrix"
@@ -616,18 +666,54 @@ class MatrixPlatform(BasePlatform):
         try:
             self.logger.info("Starting Matrix platform...")
 
+            await self.load_store()
             # Login to Matrix
-            login_response = await self.matrix_client.login(
-                self.password, device_name=self.device_id
-            )
+            login_response = await self.login()
             if isinstance(login_response, LoginResponse):
                 self.logger.info(f"Logged in to Matrix as {self.username}")
             else:
                 self.logger.error(f"Failed to login to Matrix: {login_response}")
                 return
+            await self.ensure_keys()
+            await self.initial_sync()
+
+            try:
+                pass
+            except Exception:
+                pass
 
             # Start syncing
-            await self.matrix_client.sync_forever(timeout=30000)
+            import signal as _signal
+
+            stop = asyncio.Event()
+            try:
+                loop = asyncio.get_running_loop()
+                for sig in (_signal.SIGINT, _signal.SIGTERM):
+                    try:
+                        loop.add_signal_handler(sig, stop.set)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            sync_task = asyncio.create_task(self.sync_forever())
+            stop_task = asyncio.create_task(stop.wait())
+            try:
+                done, pending = await asyncio.wait(
+                    {sync_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                pass
+            except KeyboardInterrupt:
+                pass
+            finally:
+                for t in (sync_task, stop_task):
+                    if not t.done():
+                        t.cancel()
+                try:
+                    if hasattr(self, "close"):
+                        await self.close()
+                except Exception:
+                    pass
 
         except Exception as e:
             self.logger.error(f"Error starting Matrix platform: {e}")
@@ -672,6 +758,18 @@ class MatrixPlatform(BasePlatform):
         except Exception as e:
             self.logger.error(f"Error leaving Matrix room {room_id}: {e}")
             return False
+
+    async def load_store(self) -> None:
+        """Load local store if available (encryption state)."""
+        try:
+            result = getattr(self.matrix_client, "load_store", None)
+            if callable(result):
+                maybe = result()
+                if asyncio.iscoroutine(maybe):
+                    await maybe
+        except Exception as e:
+            self.logger.warning(f"Could not load Matrix store: {e}")
+            # Continue anyway - the client will create a new store if needed
 
     async def close(self):
         """Close the Matrix client connection."""
