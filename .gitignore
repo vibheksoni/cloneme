@@ -243,3 +243,4 @@ tree.py
 memories/*.json
 profiles/*.json
 .env.backup
+store/
