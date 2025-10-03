@@ -17,8 +17,22 @@ if platform_type == "discord":
     if not platform_token:
         print("Error: DISCORD_SELF_TOKEN environment variable not found!")
         exit(1)
+elif platform_type == "matrix":
+    matrix_homeserver = os.getenv("MATRIX_HOMESERVER")
+    matrix_username = os.getenv("MATRIX_USERNAME")
+    matrix_password = os.getenv("MATRIX_PASSWORD")
+
+    if not matrix_homeserver:
+        print("Error: MATRIX_HOMESERVER environment variable not found!")
+        exit(1)
+    if not matrix_username:
+        print("Error: MATRIX_USERNAME environment variable not found!")
+        exit(1)
+    if not matrix_password:
+        print("Error: MATRIX_PASSWORD environment variable not found!")
+        exit(1)
 else:
-    print(f"Error: Unsupported platform '{platform_type}'. Currently supported: discord")
+    print(f"Error: Unsupported platform '{platform_type}'. Currently supported: discord, matrix")
     exit(1)
 
 provider = os.getenv("AI_PROVIDER")
@@ -112,6 +126,17 @@ if platform_type == "discord":
         settings_manager=settings_manager
     )
     print(f"✅ Discord platform initialized")
+elif platform_type == "matrix":
+    from mods.platform.matrix import MatrixPlatform
+    platform_instance = MatrixPlatform(
+        homeserver=matrix_homeserver,
+        username=matrix_username,
+        password=matrix_password,
+        llm=llm,
+        profile=profile,
+        settings_manager=settings_manager
+    )
+    print(f"✅ Matrix platform initialized")
 else:
     print(f"❌ Platform '{platform_type}' not implemented yet")
     exit(1)

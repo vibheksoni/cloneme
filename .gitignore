@@ -239,3 +239,8 @@ $RECYCLE.BIN/
 .venv/*
 tree.py
 /.index
+
+memories/*.json
+profiles/*.json
+.env.backup
+store/

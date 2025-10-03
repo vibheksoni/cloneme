@@ -42,7 +42,7 @@
   },
 
   "participation_control": {
-    "enabled": false,
+    "enabled": true,
     "threshold_percentage": 30,
     "time_window_minutes": 10,
     "group_chat_threshold": 30,
@@ -52,13 +52,13 @@
 
   "debug": {
     "logging": {
-      "detailed_ai_decisions": false,
-      "log_api_calls": false,
+      "detailed_ai_decisions": true,
+      "log_api_calls": true,
       "log_context_formatting": true
     },
     "development": {
-      "debug_mode": false,
-      "verbose_errors": false
+      "debug_mode": true,
+      "verbose_errors": true
     }
   },
 
@@ -78,6 +78,11 @@
       "always_answer_dms": true,
       "always_reply_to_mentions": true,
       "description": "Discord-specific behavior settings for direct messages and mentions"
+    },
+    "matrix": {
+      "always_answer_dms": true,
+      "always_reply_to_mentions": true,
+      "description": "Matrix-specific behavior settings for direct messages and mentions"
     }
   }
 }
